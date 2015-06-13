@@ -15,6 +15,35 @@ import (
 
 var log = logger.GetLogger("LightDevice")
 
+type LightDeviceState struct {
+	OnOff      *bool                `json:"on-off,omitempty"`
+	Color      *channels.ColorState `json:"color,omitempty"`
+	Brightness *float64             `json:"brightness,omitempty"`
+	Transition *int                 `json:"transition,omitempty"`
+}
+
+func (c *LightDeviceState) Clone() *LightDeviceState {
+	text, _ := json.Marshal(c)
+	state := &LightDeviceState{}
+	json.Unmarshal(text, state)
+	return state
+}
+
+type LightBatchChannel struct {
+	light *LightDevice
+}
+
+func (c *LightBatchChannel) SetBatch(state *LightDeviceState) error {
+	return c.light.SetBatch(state)
+}
+
+func (c *LightBatchChannel) GetProtocol() string {
+	return "core/batching"
+}
+
+func (c *LightBatchChannel) SetEventHandler(_ func(event string, payload ...interface{}) error) {
+}
+
 type LightDevice struct {
 	baseDevice
 	sync.Mutex
@@ -43,35 +72,6 @@ type LightDevice struct {
 	colorChannel      *channels.ColorChannel
 	transitionChannel *channels.TransitionChannel
 	identifyChannel   *channels.IdentifyChannel
-}
-
-type LightDeviceState struct {
-	OnOff      *bool                `json:"on-off,omitempty"`
-	Color      *channels.ColorState `json:"color,omitempty"`
-	Brightness *float64             `json:"brightness,omitempty"`
-	Transition *int                 `json:"transition,omitempty"`
-}
-
-func (c *LightDeviceState) Clone() *LightDeviceState {
-	text, _ := json.Marshal(c)
-	state := &LightDeviceState{}
-	json.Unmarshal(text, state)
-	return state
-}
-
-type LightBatchChannel struct {
-	light *LightDevice
-}
-
-func (c *LightBatchChannel) SetBatch(state *LightDeviceState) error {
-	return c.light.SetBatch(state)
-}
-
-func (c *LightBatchChannel) GetProtocol() string {
-	return "core/batching"
-}
-
-func (c *LightBatchChannel) SetEventHandler(_ func(event string, payload ...interface{}) error) {
 }
 
 // UpdateLightState sends the new state(s) to the channel(s) to update the user interfaces
@@ -114,11 +114,12 @@ func (d *LightDevice) UpdateLightState(state *LightDeviceState) error {
 	return nil
 }
 
+// SetBatch runs when airwheel gesture is used
 func (d *LightDevice) SetBatch(state *LightDeviceState) error {
 	d.Lock()
 	defer d.Unlock()
 
-	// NOTE: changed following line and similar other ones so it only updates the state just set
+	// NOTE: changed following line and similar ones in other functions so it only updates the state just set
 	// when it clones the existing state, it updates/sets on/off and brightness, which cancel each other out
 	// since on = brightness 100%
 	// this may not be the same for all bulbs (have an on/off state AND a brightness), so might need to be changed
@@ -200,6 +201,8 @@ func (d *LightDevice) SetBrightness(state float64) error {
 	return err
 }
 
+// SetColor sets the color for a light
+// All modes are converted to hue then corresponding color values are stored in the ColorState
 func (d *LightDevice) SetColor(state *channels.ColorState) error {
 	if d.colorChannel == nil {
 		return fmt.Errorf("This device does not have a color channel")
@@ -282,13 +285,14 @@ func (d *LightDevice) Identify() error {
 	return d.ApplyIdentify()
 }
 
-//
+// IsOn is for determining if the light is on or off
 func (d *LightDevice) IsOn() (bool, error) {
 	if d.ApplyIsOn == nil {
 		return false, fmt.Errorf("IsOn is not enabled on this device")
 	}
 	return d.ApplyIsOn()
 }
+
 func (d *LightDevice) EnableOnOffChannel() error {
 	d.onOffChannel = channels.NewOnOffChannel(d)
 	return d.conn.ExportChannel(d, d.onOffChannel, "on-off")
@@ -324,6 +328,7 @@ func (d *LightDevice) EnableTransitionChannel() error {
 	return d.conn.ExportChannel(d, d.transitionChannel, "transition")
 }
 
+// CreateLightDevice returns a LightDevice for a driver to use
 func CreateLightDevice(driver ninja.Driver, info *model.Device, conn *ninja.Connection) (*LightDevice, error) {
 
 	d := &LightDevice{
@@ -333,7 +338,6 @@ func CreateLightDevice(driver ninja.Driver, info *model.Device, conn *ninja.Conn
 			log:    logger.GetLogger("LightDevice - " + *info.Name),
 			info:   info,
 		},
-		//		state: &LightDeviceState{},
 	}
 
 	err := conn.ExportDevice(d)
@@ -349,7 +353,7 @@ func CreateLightDevice(driver ninja.Driver, info *model.Device, conn *ninja.Conn
 		d.log.Fatalf("Failed to create batch channel: %s", err)
 	}
 
-	d.log.Infof("Created")
+	d.log.Infof("Created LightDevice")
 
 	return d, nil
 }
