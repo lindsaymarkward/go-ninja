@@ -15,6 +15,36 @@ import (
 
 var log = logger.GetLogger("LightDevice")
 
+type LightDevice struct {
+	baseDevice
+	sync.Mutex
+
+	// ApplyLightState is required in your driver,
+	// and should actually set the state on the physical light
+	ApplyLightState func(state *LightDeviceState) error
+
+	// The following three are optional, and are used instead of ApplyLightState
+	// if only a single channel state is being set.
+	ApplyOnOff      func(state bool) error
+	ApplyBrightness func(state float64) error
+	ApplyColor      func(state *channels.ColorState) error
+	ApplyTransition func(state int) error
+	ApplyIdentify   func() error
+
+	// getter methods
+	ApplyIsOn func() (bool, error)
+
+	state      *LightDeviceState
+	batch      bool // unused
+	colorModes []string
+
+	onOffChannel      *channels.OnOffChannel
+	brightnessChannel *channels.BrightnessChannel
+	colorChannel      *channels.ColorChannel
+	transitionChannel *channels.TransitionChannel
+	identifyChannel   *channels.IdentifyChannel
+}
+
 type LightDeviceState struct {
 	OnOff      *bool                `json:"on-off,omitempty"`
 	Color      *channels.ColorState `json:"color,omitempty"`
@@ -44,56 +74,40 @@ func (c *LightBatchChannel) GetProtocol() string {
 func (c *LightBatchChannel) SetEventHandler(_ func(event string, payload ...interface{}) error) {
 }
 
-type LightDevice struct {
-	baseDevice
-	sync.Mutex
-
-	// SetLightState is required, and should actually set the state on the physical light
-	ApplyLightState func(state *LightDeviceState) error
-
-	// The following three are optional, and are used instead of ApplyLightState
-	// if only a single channel state is being set.
-	ApplyOnOff      func(state bool) error
-	ApplyBrightness func(state float64) error
-	ApplyColor      func(state *channels.ColorState) error
-	ApplyTransition func(state int) error
-	ApplyIdentify   func() error
-
-	state      *LightDeviceState
-	batch      bool
-	colorModes []string
-
-	onOff      *channels.OnOffChannel
-	brightness *channels.BrightnessChannel
-	color      *channels.ColorChannel
-	transition *channels.TransitionChannel
-	identify   *channels.IdentifyChannel
-}
-
-func (d *LightDevice) SetLightState(state *LightDeviceState) error {
+// UpdateLightState sends the new state(s) to the channel(s) to update the user interfaces
+// LightDevice doesn't call this automatically, so you should call it as needed in your driver
+func (d *LightDevice) UpdateLightState(state *LightDeviceState) error {
 	d.state = state
 
 	if state.OnOff != nil {
-		if err := d.onOff.SendEvent("state", *state.OnOff); err != nil {
-			return fmt.Errorf("Failed emitting on-off state: %s", err)
+		if d.onOffChannel != nil {
+			if err := d.onOffChannel.SendEvent("state", *state.OnOff); err != nil {
+				return fmt.Errorf("Failed emitting on-off state: %s", err)
+			}
 		}
 	}
 
 	if state.Brightness != nil {
-		if err := d.brightness.SendEvent("state", *state.Brightness); err != nil {
-			return fmt.Errorf("Failed emitting brightness state: %s", err)
+		if d.brightnessChannel != nil {
+			if err := d.brightnessChannel.SendEvent("state", *state.Brightness); err != nil {
+				return fmt.Errorf("Failed emitting brightness state: %s", err)
+			}
 		}
 	}
 
 	if state.Color != nil {
-		if err := d.color.SendEvent("state", *state.Color); err != nil {
-			return fmt.Errorf("Failed emitting color state: %s", err)
+		if d.colorChannel != nil {
+			if err := d.colorChannel.SendEvent("state", *state.Color); err != nil {
+				return fmt.Errorf("Failed emitting color state: %s", err)
+			}
 		}
 	}
 
 	if state.Transition != nil {
-		if err := d.transition.SendEvent("state", *state.Transition); err != nil {
-			return fmt.Errorf("Failed emitting transition state: %s", err)
+		if d.transitionChannel != nil {
+			if err := d.transitionChannel.SendEvent("state", *state.Transition); err != nil {
+				return fmt.Errorf("Failed emitting transition state: %s", err)
+			}
 		}
 	}
 
@@ -104,21 +118,27 @@ func (d *LightDevice) SetBatch(state *LightDeviceState) error {
 	d.Lock()
 	defer d.Unlock()
 
-	mergedState := d.state.Clone()
+	// NOTE: changed following line and similar other ones so it only updates the state just set
+	// when it clones the existing state, it updates/sets on/off and brightness, which cancel each other out
+	// since on = brightness 100%
+	// this may not be the same for all bulbs (have an on/off state AND a brightness), so might need to be changed
+	// or given a configuration option
+	//	lightState := d.state.Clone()
+	lightState := &LightDeviceState{}
 	if state.OnOff != nil {
-		mergedState.OnOff = state.OnOff
+		lightState.OnOff = state.OnOff
 	}
 	if state.Brightness != nil {
-		mergedState.Brightness = state.Brightness
+		lightState.Brightness = state.Brightness
 	}
 	if state.Color != nil {
-		mergedState.Color = state.Color
+		lightState.Color = state.Color
 	}
 	if state.Transition != nil {
-		mergedState.Transition = state.Transition
+		lightState.Transition = state.Transition
 	}
 
-	return d.ApplyLightState(mergedState)
+	return d.ApplyLightState(lightState)
 }
 
 func (d *LightDevice) SetOnOff(state bool) error {
@@ -136,7 +156,8 @@ func (d *LightDevice) SetOnOff(state bool) error {
 	if d.ApplyOnOff != nil {
 		err = d.ApplyOnOff(state)
 	} else {
-		lightState := d.state.Clone()
+		//		lightState := d.state.Clone()
+		lightState := &LightDeviceState{}
 		lightState.OnOff = &state
 
 		err = d.ApplyLightState(lightState)
@@ -145,16 +166,17 @@ func (d *LightDevice) SetOnOff(state bool) error {
 	return err
 }
 
-func (d *LightDevice) Identify() error {
-	if d.ApplyIdentify == nil {
-		return fmt.Errorf("Identify is not enabled on this device")
+func (d *LightDevice) ToggleOnOff() error {
+	if d.state.OnOff == nil {
+		d.log.Warningf("On-off channel is in an unknown state for toggling. Setting to off.")
+		return d.SetOnOff(false)
 	}
-	return d.ApplyIdentify()
+	return d.SetOnOff(!*d.state.OnOff)
 }
 
 func (d *LightDevice) SetBrightness(state float64) error {
 
-	if d.brightness == nil {
+	if d.brightnessChannel == nil {
 		return fmt.Errorf("This device does not have a brightness channel")
 	}
 
@@ -168,7 +190,8 @@ func (d *LightDevice) SetBrightness(state float64) error {
 	if d.ApplyBrightness != nil {
 		err = d.ApplyBrightness(state)
 	} else {
-		lightState := d.state.Clone()
+		//		lightState := d.state.Clone()
+		lightState := &LightDeviceState{}
 		lightState.Brightness = &state
 
 		err = d.ApplyLightState(lightState)
@@ -177,17 +200,8 @@ func (d *LightDevice) SetBrightness(state float64) error {
 	return err
 }
 
-func containsString(haystack []string, needle string) bool {
-	for _, v := range haystack {
-		if v == needle {
-			return true
-		}
-	}
-	return false
-}
-
 func (d *LightDevice) SetColor(state *channels.ColorState) error {
-	if d.color == nil {
+	if d.colorChannel == nil {
 		return fmt.Errorf("This device does not have a color channel")
 	}
 
@@ -196,7 +210,8 @@ func (d *LightDevice) SetColor(state *channels.ColorState) error {
 
 	var err error
 
-	lightState := d.state.Clone()
+	//	lightState := d.state.Clone()
+	lightState := &LightDeviceState{}
 	lightState.Color = state
 
 	if !containsString(d.colorModes, state.Mode) {
@@ -227,7 +242,6 @@ func (d *LightDevice) SetColor(state *channels.ColorState) error {
 			Hue:        &h,
 			Saturation: &c,
 		}
-
 	}
 
 	json, _ := json.Marshal(lightState)
@@ -243,7 +257,7 @@ func (d *LightDevice) SetColor(state *channels.ColorState) error {
 }
 
 func (d *LightDevice) SetTransition(state int) error {
-	if d.transition == nil {
+	if d.transitionChannel == nil {
 		return fmt.Errorf("This device does not have a transition channel")
 	}
 
@@ -258,34 +272,39 @@ func (d *LightDevice) SetTransition(state int) error {
 		err = d.ApplyTransition(state)
 	}
 	// I don't think we'd ever want to send a full state to the bulb if we are only updating the transition time
-
 	return err
 }
 
-func (d *LightDevice) ToggleOnOff() error {
-	if d.state.OnOff == nil {
-		d.log.Warningf("On-off channel is in an unknown state for toggling. Setting to off.")
-		return d.SetOnOff(false)
+func (d *LightDevice) Identify() error {
+	if d.ApplyIdentify == nil {
+		return fmt.Errorf("Identify is not enabled on this device")
 	}
-	return d.SetOnOff(!*d.state.OnOff)
+	return d.ApplyIdentify()
 }
 
+//
+func (d *LightDevice) IsOn() (bool, error) {
+	if d.ApplyIsOn == nil {
+		return false, fmt.Errorf("IsOn is not enabled on this device")
+	}
+	return d.ApplyIsOn()
+}
 func (d *LightDevice) EnableOnOffChannel() error {
-	d.onOff = channels.NewOnOffChannel(d)
-	return d.conn.ExportChannel(d, d.onOff, "on-off")
+	d.onOffChannel = channels.NewOnOffChannel(d)
+	return d.conn.ExportChannel(d, d.onOffChannel, "on-off")
 }
 
 func (d *LightDevice) EnableBrightnessChannel() error {
-	d.brightness = channels.NewBrightnessChannel(d)
-	return d.conn.ExportChannel(d, d.brightness, "brightness")
+	d.brightnessChannel = channels.NewBrightnessChannel(d)
+	return d.conn.ExportChannel(d, d.brightnessChannel, "brightness")
 }
 
 func (d *LightDevice) EnableIdentifyChannel() error {
 	if d.ApplyIdentify == nil {
 		return fmt.Errorf("If you want to enable the identify channel, you must provide an applyIdentify function")
 	}
-	d.identify = channels.NewIdentifyChannel(d)
-	return d.conn.ExportChannel(d, d.identify, "identify")
+	d.identifyChannel = channels.NewIdentifyChannel(d)
+	return d.conn.ExportChannel(d, d.identifyChannel, "identify")
 }
 
 func (d *LightDevice) EnableColorChannel(supportedModes ...string) error {
@@ -296,13 +315,13 @@ func (d *LightDevice) EnableColorChannel(supportedModes ...string) error {
 		log.Errorf("You must support at least hue color values")
 	}
 	d.colorModes = supportedModes
-	d.color = channels.NewColorChannel(d)
-	return d.conn.ExportChannel(d, d.color, "color")
+	d.colorChannel = channels.NewColorChannel(d)
+	return d.conn.ExportChannel(d, d.colorChannel, "color")
 }
 
 func (d *LightDevice) EnableTransitionChannel() error {
-	d.transition = channels.NewTransitionChannel(d)
-	return d.conn.ExportChannel(d, d.transition, "transition")
+	d.transitionChannel = channels.NewTransitionChannel(d)
+	return d.conn.ExportChannel(d, d.transitionChannel, "transition")
 }
 
 func CreateLightDevice(driver ninja.Driver, info *model.Device, conn *ninja.Connection) (*LightDevice, error) {
@@ -314,6 +333,7 @@ func CreateLightDevice(driver ninja.Driver, info *model.Device, conn *ninja.Conn
 			log:    logger.GetLogger("LightDevice - " + *info.Name),
 			info:   info,
 		},
+		//		state: &LightDeviceState{},
 	}
 
 	err := conn.ExportDevice(d)
@@ -398,4 +418,13 @@ func temperatureToColor(Temperature float64) colorful.Color {
 	}
 
 	return colorful.Color{Red / 255.0, Green / 255.0, Blue / 255.0}
+}
+
+func containsString(haystack []string, needle string) bool {
+	for _, v := range haystack {
+		if v == needle {
+			return true
+		}
+	}
+	return false
 }
