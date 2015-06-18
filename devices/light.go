@@ -342,7 +342,7 @@ func CreateLightDevice(driver ninja.Driver, info *model.Device, conn *ninja.Conn
 
 	err := conn.ExportDevice(d)
 	if err != nil {
-		d.log.Fatalf("Failed to export device %s: %s", *info.Name, err)
+		d.log.Fatalf("Failed to export device %s!", *info.Name, err)
 	}
 
 	methods := []string{"setBatch"}

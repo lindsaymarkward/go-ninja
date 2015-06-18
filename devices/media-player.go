@@ -37,7 +37,7 @@ type MediaPlayerDevice struct {
 	ApplyOn          func() error
 	ApplyOff         func() error
 	ApplyToggleOnOff func() error
-	onOff            *channels.OnOffChannel
+	onOffChannel     *channels.OnOffChannel
 }
 
 func (d *MediaPlayerDevice) SetOnOff(state bool) error {
@@ -119,7 +119,7 @@ func (d *MediaPlayerDevice) VolumeUp() error {
 }
 
 func (d *MediaPlayerDevice) VolumeDown() error {
-	if d.ApplyVolumeUp != nil {
+	if d.ApplyVolumeDown != nil {
 		return d.ApplyVolumeDown()
 	}
 	vol := d.volumeState - 0.05
@@ -265,8 +265,8 @@ func (d *MediaPlayerDevice) EnableOnOffChannel(supportedEvents ...string) error 
 		supportedMethods = append(supportedMethods, "toggle")
 	}
 
-	d.onOff = channels.NewOnOffChannel(d)
-	return d.conn.ExportChannelWithSupported(d, d.onOff, "on-off", &supportedEvents, &supportedMethods)
+	d.onOffChannel = channels.NewOnOffChannel(d)
+	return d.conn.ExportChannelWithSupported(d, d.onOffChannel, "on-off", &supportedEvents, &supportedMethods)
 }
 
 func (d *MediaPlayerDevice) UpdateMusicMediaState(item *channels.MusicTrackMediaItem, position *int) error {
@@ -274,7 +274,7 @@ func (d *MediaPlayerDevice) UpdateMusicMediaState(item *channels.MusicTrackMedia
 }
 
 func (d *MediaPlayerDevice) UpdateOnOffState(state bool) error {
-	return d.onOff.SendEvent("state", state)
+	return d.onOffChannel.SendEvent("state", state)
 }
 
 func (d *MediaPlayerDevice) EnableMediaChannel() error {
