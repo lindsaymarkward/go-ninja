@@ -10,6 +10,8 @@ import (
 	"github.com/ninjasphere/go-ninja/model"
 )
 
+const volumeIncrement = 0.01
+
 type MediaPlayerDevice struct {
 	baseDevice
 
@@ -38,6 +40,22 @@ type MediaPlayerDevice struct {
 	ApplyOff         func() error
 	ApplyToggleOnOff func() error
 	onOffChannel     *channels.OnOffChannel
+
+	// getter methods
+	ApplyIsOn func() (bool, error)
+}
+
+// IsOn is for determining if the media player power is on or off
+func (d *MediaPlayerDevice) IsOn() (bool, error) {
+	if d.ApplyIsOn == nil {
+		return false, fmt.Errorf("IsOn is not enabled on this device")
+	}
+	return d.ApplyIsOn()
+}
+
+func (d *MediaPlayerDevice) SetExistingVolume(volume float64) error {
+	d.volumeState = volume
+	return nil
 }
 
 func (d *MediaPlayerDevice) SetOnOff(state bool) error {
@@ -104,6 +122,14 @@ func (d *MediaPlayerDevice) SetVolume(volume *channels.VolumeState) error {
 	if d.ApplyVolume == nil {
 		return errors.New("method is not supported")
 	}
+	// Idea... not much point
+	//	if volume.Muted != nil {
+	//		// called from the phone app, not the sphereamid gesture (gesture doesn't send muted state)
+	//		log.Infof("\nPHONE app  %v\n", *volume.Level)
+	//	} else {
+	//		log.Infof("\nSphereamid %v\n", *volume.Level)
+	//	}
+	// ?? perhaps this is where the driver crashes if err...
 	return d.ApplyVolume(volume)
 }
 
@@ -111,7 +137,7 @@ func (d *MediaPlayerDevice) VolumeUp() error {
 	if d.ApplyVolumeUp != nil {
 		return d.ApplyVolumeUp()
 	}
-	vol := d.volumeState + 0.05
+	vol := d.volumeState + volumeIncrement
 	if vol > 1 {
 		vol = 1
 	}
@@ -122,7 +148,7 @@ func (d *MediaPlayerDevice) VolumeDown() error {
 	if d.ApplyVolumeDown != nil {
 		return d.ApplyVolumeDown()
 	}
-	vol := d.volumeState - 0.05
+	vol := d.volumeState - volumeIncrement
 	if vol < 0 {
 		vol = 0
 	}
@@ -143,6 +169,8 @@ func (d *MediaPlayerDevice) TogglePlay() error {
 	}
 
 }
+
+// TODO: add nil checks here
 
 func (d *MediaPlayerDevice) Play() error {
 	return d.ApplyPlayPause(true)
@@ -310,10 +338,11 @@ func CreateMediaPlayerDevice(driver ninja.Driver, info *model.Device, conn *ninj
 
 	err := conn.ExportDevice(d)
 	if err != nil {
-		d.log.Fatalf("Failed to export device %s: %s", *info.Name, err)
+		//		d.log.Fatalf("Failed to export device: %s", *info.Name, err)
+		return nil, fmt.Errorf("Failed to export device: %s", *info.Name, err)
 	}
 
-	d.log.Infof("Created")
+	d.log.Infof("Created media player device %s\n", *info.Name)
 
 	return d, nil
 }

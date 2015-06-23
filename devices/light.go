@@ -342,7 +342,8 @@ func CreateLightDevice(driver ninja.Driver, info *model.Device, conn *ninja.Conn
 
 	err := conn.ExportDevice(d)
 	if err != nil {
-		d.log.Fatalf("Failed to export device %s!", *info.Name, err)
+		//		d.log.Errorf("Failed to export device %s!", *info.Name, err)
+		return nil, fmt.Errorf("Failed to export device %s!", *info.Name, err)
 	}
 
 	methods := []string{"setBatch"}
@@ -350,10 +351,11 @@ func CreateLightDevice(driver ninja.Driver, info *model.Device, conn *ninja.Conn
 
 	err = conn.ExportChannelWithSupported(d, &LightBatchChannel{d}, "batch", &methods, &events)
 	if err != nil {
-		d.log.Fatalf("Failed to create batch channel: %s", err)
+		//		d.log.Fatalf("Failed to create batch channel: %s", err)
+		return nil, fmt.Errorf("Failed to create batch channel: %s", err)
 	}
 
-	d.log.Infof("Created LightDevice")
+	d.log.Infof("Created LightDevice %s", info.Name)
 
 	return d, nil
 }
